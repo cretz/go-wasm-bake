@@ -1,0 +1,31 @@
+buildscript {
+    ext.kotlin_version = '1.2.71'
+
+    repositories {
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+group 'com.github.cretz.go-wasm-bake'
+version '0.1.0'
+apply plugin: 'kotlin'
+apply plugin: 'application'
+applicationName = 'go-wasm-bake'
+mainClassName = 'gowasmbake.MainKt'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compile "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
+    compile "org.jetbrains.kotlin:kotlin-reflect:$kotlin_version"
+    compile 'com.github.cretz.asmble:asmble-compiler:0.4.0'
+    compile 'com.github.ajalt:clikt:1.5.0'
+    testCompile 'junit:junit:4.12'
+    testCompile "org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version"
+}
