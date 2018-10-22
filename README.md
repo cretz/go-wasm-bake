@@ -5,7 +5,7 @@ the Go code up until `main.main`, bakes in that runtime information (e.g. memory
 environment, makes the new WASM environment jump right to `main.main`, and does a couple of other minor WASM trimming
 tricks.
 
-**NOTE: As a proof of concept, it is not tested with many scenarios and may not work in all cases.**
+**NOTE: As a proof of concept, it is only tested with hello world and may not work in most cases.**
 **This is just an experiment and should not be used in production.**
 **See "Caveats" in the "How it Works" section.**
 
@@ -16,7 +16,7 @@ On the simple hello world example from the next section, GoWasmBake achieves the
 * Saved ~17% of the file size (2,445,309 bytes to 2,022,376 bytes)
 * Skipped over 4,205,101 instructions pre-`main.main` instructions (not all are executable instructions of course)
 * Skipped over and removed code for 13 package init functions
-* Took 11,649 instances of a common 9-insn pattern and changed each to a 2-insn call (i.e. un-inlined)
+* Took 11,649 instances of a common 9-insn pattern and changed each to a 2-insn call (i.e. inline expansion)
 
 Measurements have not been done on the following and would be welcomed by anyone willing to do them:
 
@@ -54,7 +54,7 @@ Set environment variable `GOOS` to `js` and `GOARCH` to `wasm`. Then compile `he
 
 The WASM file is ~2.33MB. Now, from the Go install base, copy the wasm executor JS file over:
 
-    cp $GOROOT/misc/wasm_exec.js wasm_exec.orig.js
+    cp $GOROOT/misc/wasm/wasm_exec.js wasm_exec.orig.js
 
 Test it:
 
@@ -129,21 +129,63 @@ Note, due to how baking works, the args must exactly match what was sent to `go-
 
 ## How It Works
 
-To save space, I'll just list what it does as a set of bulleted points:
+I was surprised by how large the WASM binaries produced by Go were. I did some investigating and saw that there were
+thousands of instructions on init of some packages that mostly just initialized memory. This is not specific to WASM,
+and the biggest offender is the `unicode` package that instantiates a ton of vars on init. I mentioned it in an
+[issue](https://github.com/golang/go/issues/26622) but I had were no real concrete suggestions for improvement. So I
+wrote this experiment to see what easy savings I could get. This code does the following (in bullet points to keep it
+straightforward):
 
-* TODO: explain
+* Builds an interpreter that keeps track of JS calls and breaks when it reaches `main.main`
+* Runs the WASM code with the given args and environment variables expecting it to break at `main.main`
+* Invokes `runtime.pause` which sets a few globals to values for resumption
+* Hardcodes globals in new WASM to what they currently are except index 1, which is the resume point (i.e. `PC_B`), to 
+  `runtime.main` to skip initialization
+* Hardcodes the current set of memory data into the new WASM via WASM data segments. Creates a different data segment
+  for each section of non-zero memory (allows up to 5 consecutive zeros before creating new section)
+* Remove the code for all inits in new WASM that were already executed
+* Clean up function types to fixate the locals count (doesn't help with size really, just a cleanup)
+* Abstract a [common set of 9 instructions](https://github.com/golang/go/blob/12d27d8ea5a6980b741564e2229c281dedb547d2/src/cmd/internal/obj/wasm/wasmobj.go#L422-L440)
+  into a function and change the thousands of places where it's inlined to call it
+* Write new WASM file and output the needed JS calls
 
 **Caveats**
 
-* TODO: explain exact args needed at bake time
-* TODO: explain non-pure code in init, e.g. time
-* TODO: explain async code in init
-* TODO: explain that it relies on knowledge of internals
+This experiment has a few caveats and situations where it won't work:
+
+* Requires the exact arguments, including the filename, given to the baker as will be given at runtime. This means
+  callers cannot send situationally different args at runtime (but JS syscalls can be used for external data)
+* Since it executes all inits, requires that they are mostly pure. Something in init that would do something different
+  depending on time or make a JS syscall that could have different results would not work here obviously because the
+  invocation results are saved
+* May not support some cases of async code in init. I have not tested, but the Go WASM is run in a loop, so its possible
+  it could not reach main before asking to be re-run
+* Relies on internal knowledge of how Go emits WASM which means it is unstable beyond its specific targeted version
+  (Go 1.11 as of this writing)
+* The syscalls recorded are only for getting/memoizing JS values and creating new ones. Several other syscalls that
+  happen across the JS boundary, such as setting properties, are not supported in init (but after `main.main`, sure)
 
 **Why was it not written in Go?**
 
 I needed an interpreter that I could step/stop when I wanted, customize, and inspect all sorts of information about the
-stack and the instructions. As is common in Go projets, the WASM interpreters I have seen do not expose the internals I
+stack and the instructions. As is common in Go projects, the WASM interpreters I have seen do not expose the internals I
 need. Also I have a project I built and am familiar with, [Asmble](https://github.com/cretz/asmble), that does have a
 steppable interpreter with internals exposed. So it was just easier for this proof of concept to use that. If any
 concepts from this PoC deserve a more stable implementation, a Go implementation would be desired.
+
+**Other improvements?**
+
+This was just an experiment. There are many things that could be improved or added on:
+
+* Put the JS syscalls right at the beginning of invocation in WASM instead of dumping out JS for the user (really easy)
+* Remove all stack-only (i.e. temporary) memory that is not part of the current call stack. Not sure how much stack is
+  overwritten normally. Could also remove GC'd memory based on GC mem tracking but I haven't investigated. Removing
+  unused-but-set memory could potentially save a ton of space
+* Remove dead code (i.e. unused functions) based on compile time lookup assuming no reflective access
+* Remove unused data, e.g. all those reflection strings if they are unused and user doesn't mind a non-descriptive
+  stack dump on panic
+* Remove dead code and unused data based on profile-guided optimizations. Would require a more complete-built Go runtime
+  so the interpreter could run to completion.
+* Do this all in JS by just tracking syscalls, using the array buffer memory on break, and just injecting a single
+  `unreachable` at the top of `main.main` (and exporting `runtime.pause` I guess).
+* Make the solution more generic and applicable to all WASM code, ala https://prepack.io for WASM
