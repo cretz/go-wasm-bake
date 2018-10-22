@@ -132,8 +132,8 @@ Note, due to how baking works, the args must exactly match what was sent to `go-
 I was surprised by how large the WASM binaries produced by Go were. I did some investigating and saw that there were
 thousands of instructions on init of some packages that mostly just initialized memory. This is not specific to WASM,
 and the biggest offender is the `unicode` package that instantiates a ton of vars on init. I mentioned it in an
-[issue](https://github.com/golang/go/issues/26622) but I had were no real concrete suggestions for improvement. So I
-wrote this experiment to see what easy savings I could get. This code does the following (in bullet points to keep it
+[issue](https://github.com/golang/go/issues/26622) but I had no real concrete suggestions for improvement. So I wrote
+this experiment to see what easy savings I could get. This code does the following (in bullet points to keep it
 straightforward):
 
 * Builds an interpreter that keeps track of JS calls and breaks when it reaches `main.main`
